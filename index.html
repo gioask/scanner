@@ -4,42 +4,48 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Scanner CIE per Ross1000</title>
-    <!-- Carica il motore OCR sicuro di Tesseract dal web. Sul telefono servirà internet solo al primo avvio della pagina -->
+    <!-- Motore OCR Tesseract stabile e sicuro -->
     <script src="https://jsdelivr.net"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 15px; background-color: #f4f4f9; color: #333; }
-        h2 { text-align: center; color: #0275d8; }
+        h2 { text-align: center; color: #0275d8; margin-bottom: 5px; }
+        .sub { text-align: center; font-size: 12px; color: #666; margin-bottom: 15px; }
         .btn-container { display: flex; gap: 10px; margin-bottom: 15px; }
         button { flex: 1; padding: 12px; font-size: 15px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; }
         #btnFronte { background-color: #0275d8; }
         #btnRetro { background-color: #f0ad4e; }
-        #btnSalva { background-color: #5cb85c; width: 100%; margin-top: 15px; font-size: 16px; }
-        .camera-box { position: relative; width: 100%; max-width: 400px; margin: 0 auto 15px auto; display: none; }
-        video { width: 100%; border-radius: 8px; transform: scaleX(1); }
+        #btnScatta { background-color: #d9534f; width: 100%; font-size: 16px; display: none; margin-top: 10px; margin-bottom: 15px; padding: 15px; }
+        #btnSalva { background-color: #5cb85c; width: 100%; margin-top: 20px; font-size: 16px; }
+        .camera-box { position: relative; width: 100%; max-width: 400px; margin: 0 auto; display: none; }
+        video { width: 100%; border-radius: 8px; background-color: #000; }
         .mirino { position: absolute; top: 15%; left: 5%; width: 90%; height: 70%; border: 3px dashed red; border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); pointer-events: none; }
         .form-group { margin-bottom: 10px; }
         label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555; }
         input { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
-        #status { text-align: center; font-weight: bold; color: #d9534f; margin-bottom: 10px; }
+        #status { text-align: center; font-weight: bold; color: #0275d8; margin-bottom: 10px; padding: 5px; background: #e6f2ff; border-radius: 4px; }
     </style>
 </head>
 <body>
 
-    <h2>Scanner CIE (Locale & GDPR)</h2>
-    <div id="status">Pronto per la scansione</div>
+    <h2>Scanner CIE Locale</h2>
+    <div class="sub">Conforme GDPR - Nessun dato viene salvato online</div>
+    <div id="status">Seleziona cosa scansionare</div>
 
     <div class="btn-container">
-        <button id="btnFronte" onclick="avviaScansione('FRONTE')">📸 Fronte</button>
-        <button id="btnRetro" onclick="avviaScansione('RETRO')">📸 Retro (MRZ)</button>
+        <button id="btnFronte" onclick="avviaFotocamera('FRONTE')">📸 Attiva Fronte</button>
+        <button id="btnRetro" onclick="avviaFotocamera('RETRO')">📸 Attiva Retro</button>
     </div>
 
-    <!-- Contenitore della fotocamera attiva -->
+    <!-- Area Fotocamera -->
     <div class="camera-box" id="cameraBox">
         <video id="video" autoplay playsinline></video>
         <div class="mirino"></div>
     </div>
+    
+    <!-- Pulsante per scattare manualmente quando l'utente vede l'immagine nitida -->
+    <button id="btnScatta" onclick="scattaEAnalizza()">📸 SCATTA E ANALIZZA ORA</button>
 
-    <!-- Campi del modulo compilati automaticamente -->
+    <!-- Modulo Dati -->
     <div id="modulo">
         <div class="form-group"><label>Cognome</label><input type="text" id="cognome"></div>
         <div class="form-group"><label>Nome</label><input type="text" id="nome"></div>
@@ -52,130 +58,128 @@
 
     <button id="btnSalva" onclick="scaricaCSV()">💾 Scarica riga per Excel</button>
 
-    <!-- Canvas nascosto usato solo per estrarre la foto in memoria RAM e fare l'OCR, poi distrutto -->
+    <!-- Canvas nascosto per elaborare lo scatto in RAM -->
     <canvas id="canvas" style="display:none;"></canvas>
 
     <script>
         let modalitaAttiva = "";
-        let intervalloScansione;
+        let localStream = null;
         const video = document.getElementById('video');
         const cameraBox = document.getElementById('cameraBox');
+        const btnScatta = document.getElementById('btnScatta');
         const statusDiv = document.getElementById('status');
 
-        async function avviaScansione(tipo) {
+        async function avviaFotocamera(tipo) {
             modalitaAttiva = tipo;
             cameraBox.style.display = "block";
-            statusDiv.innerText = "Avvio fotocamera in corso...";
+            btnScatta.style.display = "block";
+            statusDiv.innerText = `Inquadra il ${tipo} e premi Scatta`;
             
-            if (intervalloScansione) clearInterval(intervalloScansione);
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
 
             try {
-                // Attiva la fotocamera posteriore dello smartphone
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
+                // Constraints ottimizzati per richiedere la massima risoluzione possibile al sensore del telefono
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
                 });
-                video.srcObject = stream;
-                statusDiv.innerText = `Inquadra il ${tipo} nel rettangolo`;
-
-                // Avvia l'analisi del testo ogni 2.5 secondi per non rallentare il telefono
-                intervalloScansione = setInterval(catturaEAnalizza, 2500);
+                video.srcObject = localStream;
             } catch (err) {
-                statusDiv.innerText = "Errore di accesso alla fotocamera.";
+                statusDiv.innerText = "Errore di accesso alla fotocamera. Verifica i permessi.";
                 console.error(err);
             }
         }
 
-        function catturaEAnalizza() {
+        function scattaEAnalizza() {
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
             
+            // Imposta il canvas alla risoluzione reale del video catturato (Alta qualità)
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             
-            // Disegna il fotogramma corrente sul canvas invisibile (rimane solo in memoria RAM)
+            // Cattura il fotogramma fermo
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            statusDiv.innerText = "Analisi testo in corso (Locale)...";
+            // Spegne subito la fotocamera per risparmiare batteria e mostrare che sta elaborando
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            cameraBox.style.display = "none";
+            btnScatta.style.display = "none";
+            
+            statusDiv.innerText = "⏳ Sto decifrando il testo... Attendi 5-10 secondi.";
 
-            // Avvia il motore OCR Tesseract sulla foto temporanea
+            // Esegue l'OCR sulla foto fissa ad alta risoluzione
             Tesseract.recognize(canvas, 'ita+eng')
                 .then(({ data: { text } }) => {
-                    elaboraTestoEstratto(text);
+                    console.log("Testo Rilevato:", text);
+                    elaboraTesto(text);
                 })
-                .catch(err => console.error(err));
+                .catch(err => {
+                    statusDiv.innerText = "Errore durante l'analisi.";
+                    console.error(err);
+                });
         }
 
-        function elaboraTestoEstratto(testoGrezzo) {
+        function elaboraTesto(testoGrezzo) {
             const linee = testoGrezzo.split('\n').map(l => l.trim().replace(/\s+/g, ' '));
-            
-            if (modalitaAttiva === "FRONTE") {
-                // Cerca Numero Documento (Formato CIE: 2 lettere, 5 numeri, 2 lettere)
-                const matchDoc = testoGrezzo.toUpperCase().match(/[A-Z]{2}\d{5}[A-Z]{2}/);
-                if (matchDoc) document.getElementById('numDoc').value = matchDoc[0];
+            let datiTrovati = false;
 
-                // Cerca Cognome e Nome analizzando le righe successive alle etichette
+            if (modalitaAttiva === "FRONTE") {
+                // Estrazione Numero Documento (Formato CIE standard)
+                const matchDoc = testoGrezzo.toUpperCase().match(/[A-Z]{2}\d{5}[A-Z]{2}/);
+                if (matchDoc) { document.getElementById('numDoc').value = matchDoc[0]; datiTrovati = true; }
+
                 for (let i = 0; i < linee.length; i++) {
                     const linea = linee[i].toUpperCase();
                     if ((linea.includes("COGNOME") || linea.includes("SURNAME")) && i + 1 < linee.length) {
-                        if (!linee[i+1].includes("NOME")) document.getElementById('cognome').value = linee[i+1];
+                        document.getElementById('cognome').value = linee[i+1];
+                        datiTrovati = true;
                     }
                     if ((linea.includes("NOME") || linea.includes("GIVEN")) && i + 1 < linee.length) {
                         document.getElementById('nome').value = linee[i+1];
+                        datiTrovati = true;
                     }
                     if (linea.match(/\b([MF])\b/)) {
                         const sessoMatch = linea.match(/\b([MF])\b/);
-                        document.getElementById('sesso').value = sessoMatch[1];
+                        document.getElementById('sesso').value = sessoMatch[0];
                     }
                 }
-                
-                // Se ha preso i dati fondamentali del fronte, ferma la fotocamera
-                if (document.getElementById('cognome').value && document.getElementById('numDoc').value) {
-                    fermaFotocamera("Dati Fronte acquisiti!");
-                }
-
             } else if (modalitaAttiva === "RETRO") {
-                // Cerca la zona standard delle freccette MRZ <<<<<<
-                const righeMrz = linee.filter(l => l.includes("<<") || l.replace(/[^<]/g, "").length > 5);
+                // Analisi della zona delle freccette MRZ sul retro
+                const righeMrz = linee.filter(l => l.includes("<<") || l.replace(/[^<]/g, "").length > 4);
                 
-                if (righeMrz.length >= 2) {
-                    // Elaborazione semplificata basata sulla struttura fissa della MRZ sul retro
-                    statusDiv.innerText = "MRZ Rilevata!";
-                    
-                    // Cerchiamo la riga che contiene la data di nascita (solitamente inizia con numeri)
-                    const rigaDati = righeMrz.find(r => r.match(/^\d/));
-                    if (rigaDati && rigaDati.length >= 10) {
-                        const dataGrezza = rigaDati.substring(0, 6); // AAMMGG
-                        const sesso = rigaDati.substring(7, 8);
-                        const cittadinanza = rigaDati.substring(10, 13);
-                        
-                        document.getElementById('dataNascita').value = `${dataGrezza.substring(4,6)}/${dataGrezza.substring(2,4)}/19${dataGrezza.substring(0,2)}`;
-                        if (sesso === "M" || sesso === "F") document.getElementById('sesso').value = sesso;
-                        document.getElementById('cittadinanza').value = cittadinanza;
+                if (righeMrz.length >= 1) {
+                    // Cerca la riga dati della MRZ che inizia con numeri (contiene data di nascita e sesso)
+                    const rigaDati = righeMrz.find(r => r.replace(/\s+/g, '').match(/^\d/) || r.replace(/\s+/g, '').match(/^[A-Z0-9<]{10,}/));
+                    if (rigaDati) {
+                        const mrzPulita = rigaDati.replace(/\s+/g, '');
+                        if (mrzPulita.length >= 10) {
+                            const dataGrezza = mrzPulita.substring(0, 6); // AAMMGG
+                            document.getElementById('dataNascita').value = `${dataGrezza.substring(4,6)}/${dataGrezza.substring(2,4)}/19${dataGrezza.substring(0,2)}`;
+                            document.getElementById('sesso').value = mrzPulita.substring(7, 8);
+                            document.getElementById('cittadinanza').value = mrzPulita.substring(10, 13).replace(/</g, '');
+                            datiTrovati = true;
+                        }
                     }
                 }
 
-                // Cerca la residenza nel testo normale del retro
+                // Cerca la residenza testuale sul retro
                 for (let i = 0; i < linee.length; i++) {
                     if (linee[i].toUpperCase().includes("RESIDENZA") && i + 1 < linee.length) {
                         document.getElementById('residenza').value = linee[i+1];
+                        datiTrovati = true;
                     }
                 }
-
-                if (document.getElementById('dataNascita').value) {
-                    fermaFotocamera("Dati Retro acquisiti!");
-                }
             }
-        }
 
-        function fermaFotocamera(messaggio) {
-            clearInterval(intervalloScansione);
-            const stream = video.srcObject;
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
+            if (datiTrovati) {
+                statusDiv.innerText = "✅ Analisi completata! Controlla e correggi se necessario.";
+            } else {
+                statusDiv.innerText = "⚠️ Testo non chiaro. Riprova curando la messa a fuoco e la luce.";
             }
-            video.srcObject = null;
-            cameraBox.style.display = "none";
-            statusDiv.innerText = messaggio;
         }
 
         function scaricaCSV() {
@@ -187,7 +191,6 @@
             const doc = document.getElementById('numDoc').value;
             const res = document.getElementById('residenza').value;
 
-            // Formattazione riga punto e virgola per Excel / Ross1000
             const rigaCSV = `${cog};${nom};${sex};${dat};${cit};CIE;${doc};${res}\n`;
             
             const blob = new Blob([rigaCSV], { type: 'text/csv;charset=utf-8;' });
